@@ -9,6 +9,7 @@ readme = "README.md"
 python = "^3.8"
 pyautogen = "^0.1.14"
 transformers = "^4.35.0"
+python-dotenv = "^1.0.0"
 
 
 [build-system]
