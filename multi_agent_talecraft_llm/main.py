@@ -1,79 +1,126 @@
-
-
+import os
 import autogen
+import argparse
+import dotenv
+
+dotenv.load_dotenv()
+
+assert os.environ.get("OPENAI_API_KEY"), "Please set OPENAI_API_KEY in .env file"
+
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 
 def main():
-    # parse prompt param using arg parse
-    # For now, we will use a fixed prompt
-    prompt = "find papers on LLM applications from arxiv in the last week, create a markdown table of different domains."
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--prompt", help="Prompt to start the story")
+    args = parser.parse_args()
+    if not args.prompt:
+        print("Please provide a prompt")
+        return
 
     # build the gpt configuration object
-    config_list_gpt4 = autogen.config_list_from_json(
-        "OAI_CONFIG_LIST",
-        filter_dict={
-            "model": ["gpt-4-32k", "gpt-4-32k-0314", "gpt-4-32k-v0314"],
-        },
-    )
+    # config_list_gpt4 = autogen.config_list_from_json(
+    #     "OAI_CONFIG_LIST",
+    #     filter_dict={
+    #         "model": ["gpt-4-32k", "gpt-4-32k-0314", "gpt-4-32k-v0314"],
+    #     },
+    # )
+
     gpt4_config = {
-        "cache_seed": 42,  # change the cache_seed for different trials
+        "use_cache": False,
         "temperature": 0,
-        "config_list": config_list_gpt4,
+        "config_list": autogen.config_list_from_models(['gpt-3.5-turbo-1106']),
         "timeout": 120,
     }
 
-    # build the function map
-    # For now, we will not use any additional functions
 
-    # create our terminate msg function
-    # For now, we will not use a terminate message function
+    def is_termination_msg(content):
+        have_content = content.get('content', None) is not None
+        if have_content and 'END' in content['content']:
+            return True
+        return False
 
+    def create_character(name, personality_prompt):
+        character = autogen.AssistantAgent(
+                name=name,
+                llm_config=gpt4_config,
+                system_message=f'Character you need to interact with other characters, follow the narrative and the environment. You are a character in a story with PERSONALITY. \n\n PERSONALITY\n {personality_prompt}',
+                code_execution_config=False,
+                is_termination_msg=is_termination_msg,
+        )
+        return character
+ 
+    function_map = {
+            "create_character" : create_character,
+    }
     # create a set of agents with specific roles
+    # admin user proxy agent - takes in prompt and manages the group chat
     user_proxy = autogen.UserProxyAgent(
         name="Admin",
-        system_message="A human admin. Interact with the planner to discuss the plan. Plan execution needs to be approved by this admin.",
+        system_message='A human admin. Interact with the Story Architect to discuss the story. Plan execution needs to be approved by this admin.',
         code_execution_config=False,
-    )
-    engineer = autogen.AssistantAgent(
-        name="Engineer",
-        llm_config=gpt4_config,
-        system_message='''Engineer. You follow an approved plan. You write python/shell code to solve tasks. Wrap the code in a code block that specifies the script type. The user can't modify your code. So do not suggest incomplete code which requires others to modify. Don't use a code block if it's not intended to be executed by the executor.
-    Don't include multiple code blocks in one response. Do not ask others to copy and paste the result. Check the execution result returned by the executor.
-    If the result indicates there is an error, fix the error and output the code again. Suggest the full code instead of partial code or code changes. If the error can't be fixed or if the task is not solved even after the code is executed successfully, analyze the problem, revisit your assumption, collect additional info you need, and think of a different approach to try.
-    ''',
-    )
-    scientist = autogen.AssistantAgent(
-        name="Scientist",
-        llm_config=gpt4_config,
-        system_message="""Scientist. You follow an approved plan. You are able to categorize papers after seeing their abstracts printed. You don't write code."""
-    )
-    planner = autogen.AssistantAgent(
-        name="Planner",
-        system_message='''Planner. Suggest a plan. Revise the plan based on feedback from admin and critic, until admin approval.
-    The plan may involve an engineer who can write code and a scientist who doesn't write code.
-    Explain the plan first. Be clear which step is performed by an engineer, and which step is performed by a scientist.
-    ''',
-        llm_config=gpt4_config,
-    )
-    executor = autogen.UserProxyAgent(
-        name="Executor",
-        system_message="Executor. Execute the code written by the engineer and report the result.",
-        human_input_mode="NEVER",
-        code_execution_config={"last_n_messages": 3, "work_dir": "paper"},
-    )
-    critic = autogen.AssistantAgent(
-        name="Critic",
-        system_message="Critic. Double check plan, claims, code from other agents and provide feedback. Check whether the plan includes adding verifiable info such as source URL.",
-        llm_config=gpt4_config,
+        human_input_mode="Never",
+        is_termination_msg=is_termination_msg,
     )
 
-    # create a group chat and initiate the chat.
-    groupchat = autogen.GroupChat(agents=[user_proxy, engineer, scientist, planner, executor, critic], messages=[], max_round=50)
+    story_architect = autogen.AssistantAgent(
+        name="Story_Architect",
+        llm_config=gpt4_config,
+        code_execution_config=False,
+        system_message='Story Architect. You hold the blueprint of the narrative universe, knowing the overarching plot and setting. You are part of a multi-agent system, interact with the Character_Creator agent to create characters. There can only be a maximum of 3 characters in the story. Ensure the story maintains continuity and steer the Character_Agents to align with the main narrative. Respond with END when the story concludes',
+        is_termination_msg=is_termination_msg,
+    )
+
+
+    character_config = {
+            **gpt4_config,
+            "functions": [
+                {
+                    "name": "create_character",
+                    "description": "Create character agents",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "name": {
+                                "type": "string",
+                                "description": "Name of the character",
+                            },
+                            "personality_prompt": {
+                                "type": "string",
+                                "description": "Personality of the character",
+                            },
+                        },
+                        "required": ["name", "personality_prompt"],
+                    }
+                }
+            ],
+    }
+    character_creator = autogen.AssistantAgent(
+        name="Character_Creator",
+        llm_config=character_config,
+        system_message='Character Creator. You can create a maximum of 3 characters in the story. You are part of a multi-agent system, when the Story_Architect and Environment_Descriptor call on you, create characters as per their definition. Create characters based on the narrative and the environment.',
+        code_execution_config=False,
+        function_map=function_map,
+        is_termination_msg=is_termination_msg,
+    )
+
+    environment_descriptor = autogen.AssistantAgent(
+        name="Envrionment_Descriptor",
+        llm_config=gpt4_config,
+        code_execution_config=False,
+        system_message='Environment Descriptor. Describe the environment and paint the scenes as the story progresses. You are part of a multi-agent system, when the Story_Architect has created the narrative, you will set the initial environment, Design the environment based on the choices made by the character agents.',
+        is_termination_msg=is_termination_msg,
+    )
+
+    
+
+    groupchat = autogen.GroupChat(agents=[user_proxy, story_architect, environment_descriptor, character_creator], messages=[], max_round=5)
     manager = autogen.GroupChatManager(groupchat=groupchat, llm_config=gpt4_config)
 
     user_proxy.initiate_chat(
         manager,
-        message=prompt,
+        message=args.prompt,
     )
 
+    
 if __name__ == '__main__':
     main()
