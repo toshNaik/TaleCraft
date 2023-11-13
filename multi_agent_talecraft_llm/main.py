@@ -17,19 +17,12 @@ def main():
         print("Please provide a prompt")
         return
 
-    # build the gpt configuration object
-    # config_list_gpt4 = autogen.config_list_from_json(
-    #     "OAI_CONFIG_LIST",
-    #     filter_dict={
-    #         "model": ["gpt-4-32k", "gpt-4-32k-0314", "gpt-4-32k-v0314"],
-    #     },
-    # )
 
     gpt4_config = {
         "use_cache": False,
         "temperature": 0,
-        "config_list": autogen.config_list_from_models(['gpt-3.5-turbo-1106']),
-        "timeout": 120,
+        "config_list": autogen.config_list_from_models(['gpt-3.5-turbo-0301', 'gpt-3.5-turbo-0613']),
+        "request_timeout": 120,
     }
 
 
@@ -42,10 +35,12 @@ def main():
     characters = []
     def create_characters(names, personality_prompts):
         for name, personality_prompt in zip(names, personality_prompts):
+            # if name has any spaces, strip and replace with underscore
+            name = name.strip().replace(" ", "_")
             characters.append(autogen.AssistantAgent(
                     name=name,
                     llm_config=gpt4_config,
-                    system_message=f'You are a character agent, characters need to interact with other characters, while following the narrative set by Story_Architect and the environment set by Environment_Descriptor. You are a character in a story with NAME_AND_PERSONALITY. \n\n NAME_AND_PERSONALITY\n {personality_prompt}',
+                    system_message=f'You are a character agent, characters need to interact with other characters, while following the narrative set by Story_Architect and the environment set by Environment_Descriptor. Only use dialogues to speak to other agents for EXAMPLE. You are a character in a story with NAME_AND_PERSONALITY. \n\n NAME_AND_PERSONALITY\n {personality_prompt}',
                     code_execution_config=False,
                     is_termination_msg=is_termination_msg,
             ))
@@ -68,7 +63,7 @@ def main():
         name="Story_Architect",
         llm_config=gpt4_config,
         code_execution_config=False,
-        system_message='Story Architect. You hold the blueprint of the narrative universe, knowing the overarching plot and setting. You are part of a multi-agent system, interact with the Character_Creator agent to create characters. There can only be a maximum of 3 characters in the story. Ensure the story maintains continuity according to the character dialogues. Keep the story very short. Respond with END when the story concludes.',
+        system_message='Story Architect. You hold the blueprint of the narrative universe, knowing the overarching plot and setting. You are part of a multi-agent system, call on the Environment_Descriptor to set the environment and interact with the Character_Creator agent to create characters. There can only be a maximum of 3 characters in the story. Ensure the story maintains continuity according to the character dialogues. Keep the story very short. Respond with END when the story concludes.',
         is_termination_msg=is_termination_msg,
     )
 
@@ -107,7 +102,7 @@ def main():
     character_creator = autogen.AssistantAgent(
         name="Character_Creator",
         llm_config=character_config,
-        system_message='Character Creator. You can create a maximum of 3 characters in the story. You are part of a multi-agent system, when the Story_Architect calls on you, create characters as per their definitions. Create characters based on the narrative and the environment.',
+        system_message='Character Creator. You can create a maximum of 3 characters in the story. You are part of a multi-agent system, when the Story_Architect calls on you, create characters. Create characters based on the narrative and the environment.',
         code_execution_config=False,
         function_map=function_map,
         is_termination_msg=is_termination_msg,
@@ -132,12 +127,16 @@ def main():
     if len(characters) <= 0:
         print("No characters created")
         return
+    
+    # give previous context to the characters
+    for character in characters:
+        character._oai_messages = character_creator._oai_messages
 
     new_groupchat = autogen.GroupChat(agents=[user_proxy, story_architect, environment_descriptor, *characters], messages=groupchat.messages, max_round=10)
     new_manager = autogen.GroupChatManager(groupchat=new_groupchat, llm_config=gpt4_config)
     user_proxy.initiate_chat(
         new_manager,
-        message='Story has started, character agents start talking',
+        message='Story has started, the characters need to start speaking',
     )
 
 
