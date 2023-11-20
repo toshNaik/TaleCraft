@@ -2,14 +2,14 @@ import os
 import autogen
 import argparse
 import dotenv
+from multi_agent_talecraft_llm.agents import agents
+from multi_agent_talecraft_llm.agents.tools import CharacterCreationTool
+from multi_agent_talecraft_llm.agents import config
 
-dotenv.load_dotenv()
-
-assert os.environ.get("OPENAI_API_KEY"), "Please set OPENAI_API_KEY in .env file"
-
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
+# ------------------- Main -------------------
 
 def main():
+    # parse user input
     parser = argparse.ArgumentParser()
     parser.add_argument("--prompt", help="Prompt to start the story")
     args = parser.parse_args()
@@ -17,126 +17,33 @@ def main():
         print("Please provide a prompt")
         return
 
+    # create tier 1 agents
+    tool = CharacterCreationTool()
+    tier1_agents = agents.create_tier_1_agents(tool)
 
-    gpt4_config = {
-        "use_cache": False,
-        "temperature": 0,
-        "config_list": autogen.config_list_from_models(['gpt-3.5-turbo-0301', 'gpt-3.5-turbo-0613']),
-        "request_timeout": 120,
-    }
+    # create group chat
+    groupchat = autogen.GroupChat(agents=tier1_agents, messages=[], max_round=5)
+    manager = autogen.GroupChatManager(groupchat=groupchat, llm_config=config.base_config)
 
-
-    def is_termination_msg(content):
-        have_content = content.get('content', None) is not None
-        if have_content and 'END' in content['content']:
-            return True
-        return False
-
-    characters = []
-    def create_characters(names, personality_prompts):
-        for name, personality_prompt in zip(names, personality_prompts):
-            # if name has any spaces, strip and replace with underscore
-            name = name.strip().replace(" ", "_")
-            characters.append(autogen.AssistantAgent(
-                    name=name,
-                    llm_config=gpt4_config,
-                    system_message=f'You are a character agent, characters need to interact with other characters, while following the narrative set by Story_Architect and the environment set by Environment_Descriptor. Only use dialogues to speak to other agents for EXAMPLE. You are a character in a story with NAME_AND_PERSONALITY. \n\n NAME_AND_PERSONALITY\n {personality_prompt}',
-                    code_execution_config=False,
-                    is_termination_msg=is_termination_msg,
-            ))
-        
-
-    function_map = {
-            "create_characters" : create_characters,
-    }
-    # create a set of agents with specific roles
-    # admin user proxy agent - takes in prompt and manages the group chat
-    user_proxy = autogen.UserProxyAgent(
-        name="Admin",
-        system_message='A human admin. Interact with the Story Architect to discuss the story. Plan execution needs to be approved by this admin.',
-        code_execution_config=False,
-        human_input_mode="Never",
-        is_termination_msg=is_termination_msg,
-    )
-
-    story_architect = autogen.AssistantAgent(
-        name="Story_Architect",
-        llm_config=gpt4_config,
-        code_execution_config=False,
-        system_message='Story Architect. You hold the blueprint of the narrative universe, knowing the overarching plot and setting. You are part of a multi-agent system, call on the Environment_Descriptor to set the environment and interact with the Character_Creator agent to create characters. There can only be a maximum of 3 characters in the story. Ensure the story maintains continuity according to the character dialogues. Keep the story very short. Respond with END when the story concludes.',
-        is_termination_msg=is_termination_msg,
-    )
-
-
-    character_config = {
-            **gpt4_config,
-            "functions": [
-                {
-                    "name": "create_characters",
-                    "description": "Create character agents",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "names": {
-                                "type": "array",
-                                "items": {
-                                    "type": "string",
-                                },
-                                "maxItems": 3,
-                                "description": "Names of the characters",
-                            },
-                            "personality_prompts": {
-                                "type": "array",
-                                "items": {
-                                    "type": "string",
-                                },
-                                "maxItems": 3,
-                                "description": "Personalities of the characters",
-                            },
-                        },
-                        "required": ["names", "personality_prompts"],
-                    }
-                }
-            ],
-    }
-    character_creator = autogen.AssistantAgent(
-        name="Character_Creator",
-        llm_config=character_config,
-        system_message='Character Creator. You can create a maximum of 3 characters in the story. You are part of a multi-agent system, when the Story_Architect calls on you, create characters. Create characters based on the narrative and the environment.',
-        code_execution_config=False,
-        function_map=function_map,
-        is_termination_msg=is_termination_msg,
-    )
-
-    environment_descriptor = autogen.AssistantAgent(
-        name="Environment_Descriptor",
-        llm_config=gpt4_config,
-        code_execution_config=False,
-        system_message='Environment Descriptor. Describe the environment and paint the scenes as the story progresses. You are part of a multi-agent system, when the Story_Architect has created the narrative, you will set the initial environment, Design the environment based on the choices made by the character agents.',
-        is_termination_msg=is_termination_msg,
-    )
-
-    groupchat = autogen.GroupChat(agents=[user_proxy, story_architect, environment_descriptor, character_creator], messages=[], max_round=5)
-    manager = autogen.GroupChatManager(groupchat=groupchat, llm_config=gpt4_config)
-    
-    user_proxy.initiate_chat(
+    # initiate chat
+    tier1_agents[0].initiate_chat(
         manager,
         message=args.prompt,
     )
     
-    if len(characters) <= 0:
+    if len(tool.character_agents) <= 0:
         print("No characters created")
         return
     
     # give previous context to the characters
-    for character in characters:
-        character._oai_messages = character_creator._oai_messages
+    # for character in tool.character_agents:
+    #     character._oai_messages = tier1_agents[1]._oai_messages
 
-    new_groupchat = autogen.GroupChat(agents=[user_proxy, story_architect, environment_descriptor, *characters], messages=groupchat.messages, max_round=10)
-    new_manager = autogen.GroupChatManager(groupchat=new_groupchat, llm_config=gpt4_config)
-    user_proxy.initiate_chat(
+    new_groupchat = autogen.GroupChat(agents=[*tier1_agents, *tool.character_agents], messages=[], max_round=10)
+    new_manager = autogen.GroupChatManager(groupchat=new_groupchat, llm_config=config.base_config)
+    tier1_agents[0].initiate_chat(
         new_manager,
-        message='Story has started, the characters need to start speaking',
+        message="Story has started, Characters will now start talking",
     )
 
 
